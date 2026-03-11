@@ -34,12 +34,6 @@ Add `C:\msys64\ucrt64\bin` to PATH. Test with minimum gcc compiling.
 
 Go to https://gen.glad.sh. Select "API: gl Version 4.1" + "Compatibility/Core profile: Core". Download the generated zip file and extract to this repo.
 
-## GLFW installation
-
-```
-sudo apt install libglfw3-dev mesa-utils
-```
-
 ## Install GLFW
 
 Start MSYS2 UCRT64, then
