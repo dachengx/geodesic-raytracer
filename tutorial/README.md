@@ -28,7 +28,7 @@ Note `mingw32-make` but not `make` will be installed.
 
 ## Modify PATH
 
-Add `C:\msys64\ucrt64\bin` to PATH. Test with minimum gcc compiling.
+Add `C:\msys64\ucrt64\bin` to `PATH` of Windows. Test with minimum gcc compiling.
 
 ## Glad headers generation
 
@@ -45,5 +45,5 @@ pacman -S --needed mingw-w64-ucrt-x86_64-glfw
 # Build executive file in each project folder
 
 ```
-gcc main.c glad/src/gl.c -o app.exe -I glad/include -lglfw3
+gcc main.c ../glad/src/gl.c -o app.exe -I ../glad/include -lglfw3
 ```
