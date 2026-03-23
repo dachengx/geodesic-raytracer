@@ -16,19 +16,21 @@ Start MSYS2 UCRT64, then
 
 ```
 pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-gdb mingw-w64-ucrt-x86_64-make
+pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
 ```
 
 or
 
 ```
 pacman -S --needed mingw-w64-ucrt-x86_64-toolchain
+pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
 ```
 
 Note `mingw32-make` but not `make` will be installed.
 
 ## Modify PATH
 
-Add `C:\msys64\ucrt64\bin` to `PATH` of Windows. Test with minimum gcc compiling.
+Add `C:\msys64\ucrt64\bin` and `C:\msys64\mingw64\bin` to `PATH` of Windows. Test with minimum gcc compiling.
 
 ## Glad headers generation
 
