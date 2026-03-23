@@ -45,5 +45,5 @@ pacman -S --needed mingw-w64-ucrt-x86_64-glfw
 # Build executive file in each project folder
 
 ```
-gcc main.c ../glad/src/gl.c -o app.exe -I ../glad/include -lglfw3
+gcc main.c ../../../external/glad/src/gl.c -o app.exe -I ../../../external/glad/include -lglfw3
 ```
