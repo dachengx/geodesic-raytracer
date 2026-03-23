@@ -76,11 +76,15 @@ __device__ void get_init_rphi(
 ) {
   // 3D position of pixel on the camera plane
   float3 xyz = {
-    -cam.width_pixels  * cam.pixel_size / 2.0f + cam.pixel_size / 2.0f + wi * cam.pixel_size,
-    -cam.d_bh_cam,
+    -cam.width_pixels  * cam.pixel_size / 2.0f + cam.pixel_size / 2.0f + wi * cam.pixel_size + cam.x_offset_cam,
+    -cam.d_bh_cam + cam.y_offset_cam,
     -cam.height_pixels * cam.pixel_size / 2.0f + cam.pixel_size / 2.0f + hi * cam.pixel_size + cam.z_offset_cam
   };
-  float3 observer = { 0.0f, -(cam.d_obs_cam + cam.d_bh_cam), cam.z_offset_cam };
+  float3 observer = {
+    cam.x_offset_cam + cam.x_offset_obs,
+    -(cam.d_obs_cam + cam.d_bh_cam) + cam.y_offset_cam + cam.y_offset_obs,
+    cam.z_offset_cam + cam.z_offset_obs
+  };
   float3 dxyzdl = normalize3( xyz - observer );
 
   // Find the in-plane basis vector: trace the ray to z=0, normalize.
@@ -158,7 +162,7 @@ void launch_raytracer(
   CameraParams cam,
   RK4Params    rk4
 ) {
-  dim3 block( 16, 16 );
+  dim3 block( 32, 32 );  // 512 threads/block — better occupancy on Ada Lovelace
   dim3 grid(
     (width  + block.x - 1) / block.x,
     (height + block.y - 1) / block.y

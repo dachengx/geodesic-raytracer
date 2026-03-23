@@ -16,12 +16,17 @@ static const SceneParams kScene = {
 };
 
 static const CameraParams kCamera = {
-  .pixel_size    = 0.025f,
-  .width_pixels  = 160,
-  .height_pixels = 120,
+  .pixel_size    = 0.004f,
+  .width_pixels  = 1280,
+  .height_pixels = 720,
   .d_obs_cam     = 4.0f,
   .d_bh_cam      = 10.0f,
+  .x_offset_cam  = 0.0f,
+  .y_offset_cam  = 0.0f,
   .z_offset_cam  = 0.5f,
+  .x_offset_obs  = 0.0f,
+  .y_offset_obs  = 0.0f,
+  .z_offset_obs  = 0.0f,
 };
 
 static const RK4Params kRK4 = {
@@ -53,9 +58,8 @@ int main( void ) {
   glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
 
   // Scale up the window so the small framebuffer is visible.
-  const int scale  = 6;
   GLFWwindow* window = glfwCreateWindow(
-    W * scale, H * scale,
+    W, H,
     "Geodesic Raytracer",
     NULL, NULL
   );
@@ -94,14 +98,6 @@ int main( void ) {
   }
 
   // -------------------------------------------------------------------------
-  // Render once (static scene — CUDA finishes in milliseconds)
-  // -------------------------------------------------------------------------
-  launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4 );
-  cudaDeviceSynchronize();
-  cudaMemcpy( h_framebuffer, d_framebuffer, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
-  renderer.upload( h_framebuffer );
-
-  // -------------------------------------------------------------------------
   // Display loop
   // -------------------------------------------------------------------------
   double prev_s = glfwGetTime();
@@ -122,6 +118,11 @@ int main( void ) {
     glfwPollEvents();
     if ( glfwGetKey( window, GLFW_KEY_ESCAPE ) == GLFW_PRESS )
       glfwSetWindowShouldClose( window, 1 );
+
+    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4 );
+    cudaDeviceSynchronize();
+    cudaMemcpy( h_framebuffer, d_framebuffer, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
+    renderer.upload( h_framebuffer );
 
     glClear( GL_COLOR_BUFFER_BIT );
     renderer.draw();

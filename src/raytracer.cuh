@@ -12,7 +12,12 @@ struct CameraParams {
   int   height_pixels;
   float d_obs_cam;
   float d_bh_cam;
+  float x_offset_cam;
+  float y_offset_cam;
   float z_offset_cam;
+  float x_offset_obs;
+  float y_offset_obs;
+  float z_offset_obs;
 };
 
 struct RK4Params {
