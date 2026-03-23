@@ -65,7 +65,8 @@ int main( void ) {
     return 1;
   }
   glfwMakeContextCurrent( window );
-  glfwSwapInterval( 1 );
+  glfwSwapInterval( 0 ); // The value of 0 means "swap immediately".
+  // glfwSwapInterval( 1 ); // Lock to normal refresh rate for your monitor.
 
   if ( !gladLoadGL( glfwGetProcAddress ) ) {
     fprintf( stderr, "ERROR: failed to initialize OpenGL.\n" );
@@ -103,7 +104,21 @@ int main( void ) {
   // -------------------------------------------------------------------------
   // Display loop
   // -------------------------------------------------------------------------
+  double prev_s = glfwGetTime();
+  double title_countdown_s = 0.1;
   while ( !glfwWindowShouldClose( window ) ) {
+    double curr_s    = glfwGetTime();
+    double elapsed_s = curr_s - prev_s;
+    prev_s           = curr_s;
+
+    title_countdown_s -= elapsed_s;
+    if ( title_countdown_s <= 0.0 && elapsed_s > 0.0 ) {
+      char tmp[256];
+      sprintf( tmp, "Geodesic Raytracer | FPS %.2f", 1.0 / elapsed_s );
+      glfwSetWindowTitle( window, tmp );
+      title_countdown_s = 0.1;
+    }
+
     glfwPollEvents();
     if ( glfwGetKey( window, GLFW_KEY_ESCAPE ) == GLFW_PRESS )
       glfwSetWindowShouldClose( window, 1 );

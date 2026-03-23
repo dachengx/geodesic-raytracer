@@ -22,6 +22,12 @@ Make sure Visual Studio is installed first then CUDA. Add `C:\Program Files (x86
 ## Build executable file
 
 ```
+Remove-Item -Recurse -Force build
+```
+
+then
+
+```
 cmake -B build
 ```
 
