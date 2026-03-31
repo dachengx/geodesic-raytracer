@@ -4,12 +4,14 @@
 
 static constexpr float kPI             = 3.14159265358979323846f;
 static constexpr float kSigmaR         = 0.05f;
-static constexpr float kSigmaPhi       = 0.5f;
+static constexpr float kSigmaPhiLeft   = 0.5f;   // trailing edge (dphi < 0)
+static constexpr float kSigmaPhiRight  = 0.1f;   // leading edge  (dphi >= 0)
 static constexpr float kSigmaREnvelope = 2.0f;
 // Precomputed reciprocals — avoids divisions inside the Gaussian loop.
-static constexpr float kInvSigmaR2     = 1.0f / (kSigmaR         * kSigmaR        );
-static constexpr float kInvSigmaPhi2   = 1.0f / (kSigmaPhi       * kSigmaPhi      );
-static constexpr float kInvSigmaREnv2  = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
+static constexpr float kInvSigmaR2         = 1.0f / (kSigmaR         * kSigmaR        );
+static constexpr float kInvSigmaPhiLeft2   = 1.0f / (kSigmaPhiLeft   * kSigmaPhiLeft  );
+static constexpr float kInvSigmaPhiRight2  = 1.0f / (kSigmaPhiRight  * kSigmaPhiRight );
+static constexpr float kInvSigmaREnv2      = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
 
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
@@ -165,7 +167,8 @@ __global__ void raytracer_kernel(
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float dr   = r_hit - g_gaussian_centers[g].x;
         float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
-        float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * kInvSigmaPhi2 );
+        float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
+        float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
         intensity += 0.5f * __expf( exponent );
       }
 
