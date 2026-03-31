@@ -117,7 +117,7 @@ int main( void ) {
   // -------------------------------------------------------------------------
   // Display loop
   // -------------------------------------------------------------------------
-  float  phi_offset        = 0.0f;
+  float  phi_offset = 0.0f;
   double prev_s = glfwGetTime();
   double title_countdown_s = 0.1;
   while ( !glfwWindowShouldClose( window ) ) {

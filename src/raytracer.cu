@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
-static constexpr float kPI              = 3.14159265358979323846f;
+static constexpr float kPI             = 3.14159265358979323846f;
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhi       = 0.5f;
 static constexpr float kSigmaREnvelope = 2.0f;
