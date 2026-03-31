@@ -5,6 +5,7 @@
 static constexpr float kPI             = 3.14159265358979323846f;
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
+static constexpr int   kBlurRadius     = 1;
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhiLeft   = 0.5f;   // trailing edge (dphi < 0)
 static constexpr float kSigmaPhiRight  = 0.1f;   // leading edge  (dphi >= 0)
@@ -217,8 +218,6 @@ void launch_raytracer(
 // ---------------------------------------------------------------------------
 // Box blur kernel — shared memory tile avoids redundant global memory reads.
 // ---------------------------------------------------------------------------
-static constexpr int kBlurRadius = 1;
-
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void blur_kernel(
   const float* __restrict__ input,
