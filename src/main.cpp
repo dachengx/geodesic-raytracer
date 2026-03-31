@@ -2,6 +2,8 @@
 #include <GLFW/glfw3.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
 
 #include "raytracer.cuh"
 #include "renderer.h"
@@ -23,10 +25,10 @@ static const CameraParams kCamera = {
   .d_bh_cam      = 10.0f,
   .x_offset_cam  = 0.0f,
   .y_offset_cam  = 0.0f,
-  .z_offset_cam  = 0.5f,
+  .z_offset_cam  = 1.0f,
   .x_offset_obs  = 0.0f,
   .y_offset_obs  = 0.0f,
-  .z_offset_obs  = 0.0f,
+  .z_offset_obs  = 0.5f,
 };
 
 static const RK4Params kRK4 = {
@@ -80,6 +82,21 @@ int main( void ) {
     glGetString( GL_VERSION ), glGetString( GL_RENDERER ) );
 
   // -------------------------------------------------------------------------
+  // Generate Gaussian centers randomly in (r, phi) and upload to GPU.
+  // -------------------------------------------------------------------------
+  {
+    static const float kPI = 3.14159265358979323846f;
+    srand( 42 );
+    float2 centers[NUM_GAUSSIANS];
+    for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
+      float t = (float)rand() / (float)RAND_MAX;
+      centers[i].x = kScene.accretion_r_min + t * (kScene.accretion_r_max - kScene.accretion_r_min);
+      centers[i].y = 2.0f * kPI * (float)rand() / (float)RAND_MAX;
+    }
+    upload_gaussians( centers );
+  }
+
+  // -------------------------------------------------------------------------
   // CUDA buffers
   // -------------------------------------------------------------------------
   float* d_framebuffer = NULL;
@@ -100,6 +117,7 @@ int main( void ) {
   // -------------------------------------------------------------------------
   // Display loop
   // -------------------------------------------------------------------------
+  float  phi_offset        = 0.0f;
   double prev_s = glfwGetTime();
   double title_countdown_s = 0.1;
   while ( !glfwWindowShouldClose( window ) ) {
@@ -119,7 +137,8 @@ int main( void ) {
     if ( glfwGetKey( window, GLFW_KEY_ESCAPE ) == GLFW_PRESS )
       glfwSetWindowShouldClose( window, 1 );
 
-    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4 );
+    phi_offset += 0.2f * (float)elapsed_s;
+    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4, phi_offset );
     cudaDeviceSynchronize();
     cudaMemcpy( h_framebuffer, d_framebuffer, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
     renderer.upload( h_framebuffer );

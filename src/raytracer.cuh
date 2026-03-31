@@ -1,4 +1,10 @@
 #pragma once
+#include <cuda_runtime.h>
+
+#define NUM_GAUSSIANS 100
+
+// Upload Gaussian centers (r, phi) to device constant memory before rendering.
+void upload_gaussians( const float2* centers );
 
 struct SceneParams {
   float r_s;
@@ -31,5 +37,6 @@ void launch_raytracer(
   int          height,
   SceneParams  scene,
   CameraParams cam,
-  RK4Params    rk4
+  RK4Params    rk4,
+  float        phi_offset
 );
