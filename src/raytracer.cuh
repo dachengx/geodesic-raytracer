@@ -40,3 +40,11 @@ void launch_raytracer(
   RK4Params    rk4,
   float        phi_offset
 );
+
+// Box blur post-process: reads input, writes averaged result to output.
+void launch_blur(
+  const float* d_input,
+  float*       d_output,
+  int          width,
+  int          height
+);

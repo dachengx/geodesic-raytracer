@@ -102,6 +102,9 @@ int main( void ) {
   float* d_framebuffer = NULL;
   cudaMalloc( &d_framebuffer, W * H * sizeof( float ) );
 
+  float* d_blurred = NULL;
+  cudaMalloc( &d_blurred, W * H * sizeof( float ) );
+
   float* h_framebuffer = NULL;
   cudaMallocHost( &h_framebuffer, W * H * sizeof( float ) );  // pinned for fast DtoH
 
@@ -139,8 +142,9 @@ int main( void ) {
 
     phi_offset += 0.2f * (float)elapsed_s;
     launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4, phi_offset );
+    launch_blur( d_framebuffer, d_blurred, W, H );
     cudaDeviceSynchronize();
-    cudaMemcpy( h_framebuffer, d_framebuffer, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
+    cudaMemcpy( h_framebuffer, d_blurred, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
     renderer.upload( h_framebuffer );
 
     glClear( GL_COLOR_BUFFER_BIT );
@@ -154,6 +158,7 @@ int main( void ) {
   renderer.destroy();
   cudaFreeHost( h_framebuffer );
   cudaFree( d_framebuffer );
+  cudaFree( d_blurred );
   glfwTerminate();
   return 0;
 }
