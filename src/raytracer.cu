@@ -3,6 +3,9 @@
 #include <math.h>
 
 static constexpr float kPI             = 3.14159265358979323846f;
+static constexpr int   kBlockDimX      = 32;
+static constexpr int   kBlockDimY      = 32;
+static constexpr int   kBlurRadius     = 1;
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhiLeft   = 0.5f;   // trailing edge (dphi < 0)
 static constexpr float kSigmaPhiRight  = 0.1f;   // leading edge  (dphi >= 0)
@@ -115,7 +118,7 @@ __device__ void get_init_rphi(
 // Main kernel: one thread per pixel.
 // Outputs a float per pixel: 0 = fell into BH, 1 = hit accretion, 0.5 = escaped.
 // ---------------------------------------------------------------------------
-__launch_bounds__( 1024 )
+__launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void raytracer_kernel(
   float* __restrict__ framebuffer,
   int          width,
@@ -204,10 +207,66 @@ void launch_raytracer(
   RK4Params    rk4,
   float        phi_offset
 ) {
-  dim3 block( 32, 32 );
+  dim3 block( kBlockDimX, kBlockDimY );
   dim3 grid(
-    (width  + block.x - 1) / block.x,
-    (height + block.y - 1) / block.y
+    (width  + kBlockDimX - 1) / kBlockDimX,
+    (height + kBlockDimY - 1) / kBlockDimY
   );
   raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, phi_offset );
+}
+
+// ---------------------------------------------------------------------------
+// Box blur kernel — shared memory tile avoids redundant global memory reads.
+// ---------------------------------------------------------------------------
+__launch_bounds__( kBlockDimX * kBlockDimY )
+__global__ void blur_kernel(
+  const float* __restrict__ input,
+  float*       __restrict__ output,
+  int width, int height
+) {
+  constexpr int R      = kBlurRadius;
+  constexpr int TILE_W = kBlockDimX + 2 * R;
+  constexpr int TILE_H = kBlockDimY + 2 * R;
+  __shared__ float tile[ TILE_H ][ TILE_W ];
+
+  const int base_x = blockIdx.x * kBlockDimX - R;
+  const int base_y = blockIdx.y * kBlockDimY - R;
+  const int flat   = threadIdx.y * kBlockDimX + threadIdx.x;
+  const int total  = TILE_W * TILE_H;
+
+  // Cooperatively load the padded tile (handles halo with clamped addressing).
+  for ( int i = flat; i < total; i += kBlockDimX * kBlockDimY ) {
+    int lx = i % TILE_W;
+    int ly = i / TILE_W;
+    int gx = max( 0, min( base_x + lx, width  - 1 ) );
+    int gy = max( 0, min( base_y + ly, height - 1 ) );
+    tile[ ly ][ lx ] = input[ gy * width + gx ];
+  }
+  __syncthreads();
+
+  int wi = blockIdx.x * kBlockDimX + threadIdx.x;
+  int hi = blockIdx.y * kBlockDimY + threadIdx.y;
+  if ( wi >= width || hi >= height ) return;
+
+  float sum = 0.0f;
+  for ( int dy = -R; dy <= R; dy++ )
+    for ( int dx = -R; dx <= R; dx++ )
+      sum += tile[ threadIdx.y + R + dy ][ threadIdx.x + R + dx ];
+
+  constexpr float kInvCount = 1.0f / ( (2*R+1) * (2*R+1) );
+  output[ hi * width + wi ] = sum * kInvCount;
+}
+
+void launch_blur(
+  const float* d_input,
+  float*       d_output,
+  int          width,
+  int          height
+) {
+  dim3 block( kBlockDimX, kBlockDimY );
+  dim3 grid(
+    ( width  + kBlockDimX - 1 ) / kBlockDimX,
+    ( height + kBlockDimY - 1 ) / kBlockDimY
+  );
+  blur_kernel<<<grid, block>>>( d_input, d_output, width, height );
 }
