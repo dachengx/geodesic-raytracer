@@ -2,7 +2,13 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
-static constexpr float kPI = 3.14159265358979323846f;
+static constexpr float kPI             = 3.14159265358979323846f;
+static constexpr float kSigmaR         = 0.05f;
+static constexpr float kSigmaPhi       = 0.5f;
+static constexpr float kSigmaREnvelope = 2.0f;
+
+// Gaussian centers in (r, phi) space, uploaded once before rendering.
+__constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
 
 // ---------------------------------------------------------------------------
 // float3 operators (not provided by cuda_runtime.h by default)
@@ -50,20 +56,6 @@ __device__ State rk4_step( State y, float dl, float r_s, float L ) {
   return yp;
 }
 
-// Returns true when the ray crosses the accretion disk plane (phi = 0 or pi)
-// while inside the accretion radii.
-__device__ bool across_accretion(
-  float r0, float phi0,
-  float r1, float phi1,
-  float r_min, float r_max
-) {
-  if ( r0 > r_min && r0 < r_max && r1 > r_min && r1 < r_max ) {
-    if ( (phi0 * phi1 < 0.0f) || ((phi0 - kPI) * (phi1 - kPI) < 0.0f) )
-      return true;
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Project 3D pixel position into the 2D (r, phi) initial conditions.
 // Each pixel defines a unique orbital plane through the BH.
@@ -72,7 +64,8 @@ __device__ bool across_accretion(
 __device__ void get_init_rphi(
   int wi, int hi,
   const CameraParams& cam,
-  float& r0, float& u0, float& phi0, float& L
+  float& r0, float& u0, float& phi0, float& L,
+  float3& accretion_out
 ) {
   // 3D position of pixel on the camera plane
   float3 xyz = {
@@ -89,16 +82,17 @@ __device__ void get_init_rphi(
 
   // Find the in-plane basis vector: trace the ray to z=0, normalize.
   float e = -xyz.z / dxyzdl.z;
-  float3 accretion_dir = normalize3( xyz + e * dxyzdl );
-  if ( accretion_dir.y < 0.0f )
-    accretion_dir = (-1.0f) * accretion_dir;
+  float3 accretion = normalize3( xyz + e * dxyzdl );
+  if ( accretion.y < 0.0f )
+    accretion = (-1.0f) * accretion;
+  accretion_out = accretion;
 
   // Project 3D position and direction into 2D (x, y) in this plane.
-  float x0_2d  = dot3( xyz,    accretion_dir );
+  float x0_2d  = dot3( xyz, accretion );
   float y0_2d  = sqrtf( fmaxf( 0.0f, dot3( xyz, xyz ) - x0_2d * x0_2d ) );
   if ( xyz.z < 0.0f ) y0_2d = -y0_2d;
 
-  float dxdl0  = dot3( dxyzdl, accretion_dir );
+  float dxdl0  = dot3( dxyzdl, accretion );
   float dydl0  = sqrtf( fmaxf( 0.0f, 1.0f - dxdl0 * dxdl0 ) );
   if ( dxyzdl.z < 0.0f ) dydl0 = -dydl0;
 
@@ -121,34 +115,75 @@ __global__ void raytracer_kernel(
   int          height,
   SceneParams  scene,
   CameraParams cam,
-  RK4Params    rk4
+  RK4Params    rk4,
+  float        phi_offset
 ) {
   int wi = blockIdx.x * blockDim.x + threadIdx.x;
   int hi = blockIdx.y * blockDim.y + threadIdx.y;
   if ( wi >= width || hi >= height ) return;
 
   float r0, u0, phi0, L;
-  get_init_rphi( wi, hi, cam, r0, u0, phi0, L );
+  float3 accretion;
+  get_init_rphi( wi, hi, cam, r0, u0, phi0, L, accretion );
 
   State y = { r0, u0, phi0 };
-  float value = 0.5f;  // default: escaped to infinity
+  float value = 0.0f;  // default: escaped to infinity
 
   for ( int i = 0; i < rk4.N; i++ ) {
     State yn = rk4_step( y, rk4.dl, scene.r_s, L );
 
-    if ( across_accretion( y.r, y.phi, yn.r, yn.phi,
-                           scene.accretion_r_min, scene.accretion_r_max ) ) {
-      value = 1.0f;
-      break;
+    float phi0s = y.phi, phi1s = yn.phi;
+    bool in_disk = ( y.r  > scene.accretion_r_min && y.r  < scene.accretion_r_max &&
+                     yn.r > scene.accretion_r_min && yn.r < scene.accretion_r_max );
+    // Phi=0 crossing: first-step case OR wrap 2π→0 (L>0) OR wrap 0→2π (L<0).
+    bool cross_zero = fabsf(phi0s - phi1s) > kPI;
+    bool cross_pi   = ( (phi0s - kPI) * (phi1s - kPI) < 0.0f );
+
+    if ( in_disk && ( cross_zero || cross_pi ) ) {
+      // Midpoint radius at crossing
+      float r_hit = 0.5f * ( y.r + yn.r );
+
+      // Global azimuthal angle of the intersection in the accretion disk plane.
+      // cross_zero => intersection along +accretion; cross_pi => along -accretion.
+      float disk_phi;
+      if ( cross_zero ) {
+        disk_phi = atan2f(  accretion.y,  accretion.x );
+      } else {
+        disk_phi = atan2f( -accretion.y, -accretion.x );
+      }
+      if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
+
+      // Sum all Gaussian contributions at (r_hit, disk_phi).
+      float intensity = 0.0f;
+      for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
+        float dr   = r_hit - g_gaussian_centers[g].x;
+        float dphi = disk_phi - phi_offset - g_gaussian_centers[g].y;
+        // Wrap dphi to (-pi, pi)
+        dphi = remainderf( dphi, 2.0f * kPI );
+        float exponent = -0.5f * ( (dr * dr) / (kSigmaR * kSigmaR) + (dphi * dphi) / (kSigmaPhi * kSigmaPhi) );
+        intensity += 0.5f * expf( exponent );
+      }
+
+      float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
+      float dr_mid = r_hit - r_mid;
+      float radial_envelope = expf( -0.5f * dr_mid * dr_mid / ( kSigmaREnvelope * kSigmaREnvelope ) );
+      value += fminf( intensity * radial_envelope, 1.0f );
     }
     if ( yn.r <= scene.r_s ) {
-      value = 0.0f;
+      value += 0.0f;
       break;
     }
     y = yn;
   }
 
   framebuffer[ hi * width + wi ] = value;
+}
+
+// ---------------------------------------------------------------------------
+// Upload Gaussian centers to constant memory (call once before render loop).
+// ---------------------------------------------------------------------------
+void upload_gaussians( const float2* centers ) {
+  cudaMemcpyToSymbol( g_gaussian_centers, centers, NUM_GAUSSIANS * sizeof( float2 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -160,12 +195,13 @@ void launch_raytracer(
   int          height,
   SceneParams  scene,
   CameraParams cam,
-  RK4Params    rk4
+  RK4Params    rk4,
+  float        phi_offset
 ) {
-  dim3 block( 32, 32 );  // 512 threads/block — better occupancy on Ada Lovelace
+  dim3 block( 32, 32 );
   dim3 grid(
     (width  + block.x - 1) / block.x,
     (height + block.y - 1) / block.y
   );
-  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4 );
+  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, phi_offset );
 }
