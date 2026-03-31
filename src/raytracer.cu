@@ -6,6 +6,10 @@ static constexpr float kPI             = 3.14159265358979323846f;
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhi       = 0.5f;
 static constexpr float kSigmaREnvelope = 2.0f;
+// Precomputed reciprocals — avoids divisions inside the Gaussian loop.
+static constexpr float kInvSigmaR2     = 1.0f / (kSigmaR         * kSigmaR        );
+static constexpr float kInvSigmaPhi2   = 1.0f / (kSigmaPhi       * kSigmaPhi      );
+static constexpr float kInvSigmaREnv2  = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
 
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
@@ -109,8 +113,9 @@ __device__ void get_init_rphi(
 // Main kernel: one thread per pixel.
 // Outputs a float per pixel: 0 = fell into BH, 1 = hit accretion, 0.5 = escaped.
 // ---------------------------------------------------------------------------
+__launch_bounds__( 1024 )
 __global__ void raytracer_kernel(
-  float*       framebuffer,
+  float* __restrict__ framebuffer,
   int          width,
   int          height,
   SceneParams  scene,
@@ -128,6 +133,7 @@ __global__ void raytracer_kernel(
 
   State y = { r0, u0, phi0 };
   float value = 0.0f;  // default: escaped to infinity
+  const float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
 
   for ( int i = 0; i < rk4.N; i++ ) {
     State yn = rk4_step( y, rk4.dl, scene.r_s, L );
@@ -154,23 +160,20 @@ __global__ void raytracer_kernel(
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
+      const float sample_phi = disk_phi - phi_offset;
       float intensity = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float dr   = r_hit - g_gaussian_centers[g].x;
-        float dphi = disk_phi - phi_offset - g_gaussian_centers[g].y;
-        // Wrap dphi to (-pi, pi)
-        dphi = remainderf( dphi, 2.0f * kPI );
-        float exponent = -0.5f * ( (dr * dr) / (kSigmaR * kSigmaR) + (dphi * dphi) / (kSigmaPhi * kSigmaPhi) );
-        intensity += 0.5f * expf( exponent );
+        float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
+        float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * kInvSigmaPhi2 );
+        intensity += 0.5f * __expf( exponent );
       }
 
-      float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
       float dr_mid = r_hit - r_mid;
-      float radial_envelope = expf( -0.5f * dr_mid * dr_mid / ( kSigmaREnvelope * kSigmaREnvelope ) );
+      float radial_envelope = __expf( -0.5f * dr_mid * dr_mid * kInvSigmaREnv2 );
       value += fminf( intensity * radial_envelope, 1.0f );
     }
     if ( yn.r <= scene.r_s ) {
-      value += 0.0f;
       break;
     }
     y = yn;
