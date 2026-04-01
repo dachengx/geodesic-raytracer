@@ -13,15 +13,15 @@
 // ---------------------------------------------------------------------------
 static const SceneParams kScene = {
   .r_s             = 1.0f, // r_s is 2GM/c^2
-  .accretion_r_min = 2.0f,
-  .accretion_r_max = 6.0f,
+  .accretion_r_min = 3.5f,
+  .accretion_r_max = 7.5f,
 };
 
 static const CameraParams kCamera = {
-  .pixel_size    = 0.004f,
+  .pixel_size    = 0.005f,
   .width_pixels  = 1280,
   .height_pixels = 720,
-  .d_obs_cam     = 4.0f,
+  .d_obs_cam     = 5.0f,
   .d_bh_cam      = 10.0f,
   .x_offset_cam  = 0.0f,
   .y_offset_cam  = 0.0f,
@@ -32,6 +32,7 @@ static const CameraParams kCamera = {
 };
 
 static constexpr float kTimeScale        = 0.5f; // Scales wall-clock seconds to simulation time
+static constexpr float kAccretionMargin  = 0.1f;
 static constexpr int   kGaussianRandSeed = 42;
 
 static const RK4Params kRK4 = {
@@ -92,7 +93,9 @@ int main( void ) {
     float2 centers[NUM_GAUSSIANS];
     for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
       float t = (float)rand() / (float)RAND_MAX;
-      centers[i].x = kScene.accretion_r_min + t * (kScene.accretion_r_max - kScene.accretion_r_min);
+      float r_lo = kScene.accretion_r_min + 2.0f * kAccretionMargin;
+      float r_hi = kScene.accretion_r_max - 2.0f * kAccretionMargin;
+      centers[i].x = r_lo + t * (r_hi - r_lo);
       centers[i].y = 2.0f * kPI * (float)rand() / (float)RAND_MAX;
     }
     upload_gaussians( centers, kScene.r_s );

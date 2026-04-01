@@ -5,7 +5,7 @@
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
-static constexpr float kSpeedScale     = 0.8f; // manual scale factor for orbital speed
+static constexpr float kSpeedScale     = 0.9f; // manual scale factor for orbital speed
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhiLeft   = 0.5f; // trailing edge (dphi < 0)
 static constexpr float kSigmaPhiRight  = 0.1f; // leading edge  (dphi >= 0)
@@ -129,10 +129,10 @@ __device__ void get_init_rphi(
 
 // ---------------------------------------------------------------------------
 // Keplerian orbital speed at radius r around a black hole with Schwarzschild
-// radius r_s. Returns v = sqrt(r_s / (2r)), the azimuthal speed in natural units.
+// radius r_s. Returns v = sqrt(r_s / (2r - 3r_s)), the azimuthal speed in natural units.
 // ---------------------------------------------------------------------------
 __device__ __host__ inline float orbital_speed( float r, float r_s ) {
-  return sqrtf( 0.5f * r_s / r );
+  return sqrtf( r_s / (2.0f * r - 3.0f * r_s) );
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +197,8 @@ __global__ void raytracer_kernel(
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
+      // Gravitational redshift depends only on emission radius, not on which Gaussian.
+      float grav_redshift = sqrtf( 1.0f - scene.r_s / r_hit );
       float intensity_cross  = 0.0f;
       float shift_cross      = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
@@ -206,8 +208,8 @@ __global__ void raytracer_kernel(
         float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
         float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
 
-        // Relativistic intensity boost
-        float delta   = 1.0f / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
+        // Relativistic intensity boost: kinematic Doppler × gravitational redshift
+        float delta = grav_redshift / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
         float contrib = __expf( exponent ) * delta * delta * delta;
 
         intensity_cross  += contrib;

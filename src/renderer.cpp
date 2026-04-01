@@ -32,7 +32,7 @@ vec3 shift_to_rgb(float lambda) {
 }
 
 void main() {
-    const float kBaseWavelength = 600.0; // nm, unshifted emission wavelength
+    const float kBaseWavelength = 500.0; // nm, unshifted emission wavelength
     float v     = texture(tex_intensity, uv).r;
     float ratio = texture(tex_shift,     uv).r;
     frag_color  = vec4(v * shift_to_rgb(kBaseWavelength / ratio), 1.0);
