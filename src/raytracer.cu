@@ -5,7 +5,7 @@
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
-static constexpr float kSpeedScale     = 0.9f; // manual scale factor for orbital speed
+static constexpr float kSpeedScale     = 1.0f; // manual scale factor for orbital speed
 static constexpr float kSigmaR         = 0.05f;
 static constexpr float kSigmaPhiLeft   = 0.5f; // trailing edge (dphi < 0)
 static constexpr float kSigmaPhiRight  = 0.1f; // leading edge  (dphi >= 0)
