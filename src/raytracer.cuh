@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 
-#define NUM_GAUSSIANS 100
+#define NUM_GAUSSIANS 150
 
 static constexpr float kPI = 3.14159265358979323846f;
 

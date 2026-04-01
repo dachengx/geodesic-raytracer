@@ -1,6 +1,6 @@
 # Raytracer in Curved Spacetime
 
-Real-time rendering of light paths near a Schwarzschild black hole, implemented in CUDA and OpenGL (C++). Each pixel traces a null geodesic through the Schwarzschild metric using a 4th-order Runge-Kutta integrator, producing gravitational lensing and an accretion disk with animated texture.
+Real-time rendering of light paths near a Schwarzschild black hole, implemented in CUDA and OpenGL (C++). Each pixel traces a null geodesic through the Schwarzschild metric using a 4th-order Runge-Kutta integrator, producing an accretion disk with animated texture.
 
 ## Geodesic equation
 
@@ -19,15 +19,15 @@ Numba JIT acceleration brings each frame down to roughly one minute on CPU.
 
 ## Accretion disk texture
 
-The accretion disk occupies the equatorial plane between `r_min = 2` and `r_max = 6` (in units of the Schwarzschild radius). When a geodesic crosses this plane the intersection point is located in global `(r, φ)` coordinates and sampled against a procedural texture.
+The accretion disk occupies the equatorial plane between `r_min` and `r_max` (in units of the Schwarzschild radius). When a geodesic crosses this plane the intersection point is located in global `(r, φ)` coordinates and sampled against a procedural texture.
 
-The texture is a sum of 100 Gaussians placed randomly in `(r, φ)` space:
+The texture is a sum of many Gaussians placed randomly in `(r, φ)` space:
 
-- Azimuthal width: σ_φ = 0.5 rad — produces narrow bright strips
-- Radial width: σ_r = 0.05 — strips are tightly localised in radius
-- A broad radial envelope (σ = 2, centred on the disk midpoint) smoothly fades brightness toward the inner and outer edges
+- Azimuthal width: σ_φ rad — produces narrow bright strips
+- Radial width: σ_r — strips are tightly localised in radius
+- A broad radial envelope (σ, centred on the disk midpoint) smoothly fades brightness toward the inner and outer edges
 
-Gaussian centers are generated once at startup with a fixed seed and uploaded to GPU constant memory, so they are free to read from all threads with no latency penalty. The texture rotates at **0.2 rad/s**, driven by wall-clock time so the speed is frame-rate independent.
+Gaussian centers are generated once at startup with a fixed seed and uploaded to GPU constant memory, so they are free to read from all threads with no latency penalty. The physical time is scaled from wall-clock time so the speed is frame-rate independent.
 
 ## 3D raytracing with CUDA
 
