@@ -18,6 +18,10 @@ static constexpr float kInvSigmaR2        = 1.0f / (kSigmaR         * kSigmaR   
 static constexpr float kInvSigmaPhiLeft2  = 1.0f / (kSigmaPhiLeft   * kSigmaPhiLeft  );
 static constexpr float kInvSigmaPhiRight2 = 1.0f / (kSigmaPhiRight  * kSigmaPhiRight );
 static constexpr float kInvSigmaREnv2     = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
+// Skip Gaussians whose spatial exponent is below this (contribution < e^-7 ≈ 0.0009).
+static constexpr float kGaussianExpCutoff = -7.0f;
+// Radial cutoff derived from kGaussianExpCutoff: skip if |dr| alone exceeds threshold.
+static constexpr float kRadialCutoff2     = -2.0f * kGaussianExpCutoff / kInvSigmaR2;
 
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
@@ -224,11 +228,16 @@ __global__ void raytracer_kernel(
       float grav_redshift = sqrtf( 1.0f - scene.r_s / r_hit );
       float3 color_cross = { 0.0f, 0.0f, 0.0f };
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
+        // Cheap radial check — skip before computing remainderf.
+        float dr = r_hit - g_gaussian_centers[g].x;
+        if ( dr * dr > kRadialCutoff2 ) continue;
+
         float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
-        float dr   = r_hit - g_gaussian_centers[g].x;
         float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
         float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
         float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
+        // Full exponent cutoff — skip before delta, boost, shift_to_rgb.
+        if ( exponent < kGaussianExpCutoff ) continue;
 
         // Relativistic intensity boost: kinematic Doppler × gravitational redshift
         float delta = grav_redshift / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
