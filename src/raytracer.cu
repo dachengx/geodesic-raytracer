@@ -2,19 +2,22 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
+static constexpr float kBaseWavelength = 500.0f; // nm, unshifted emission wavelength
+static constexpr bool  kDopplerShift   = true; // false = white (intensity only, no Doppler color)
+static constexpr bool  kIntensityBoost = true; // false = skip relativistic delta^3 intensity boosting
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
 static constexpr float kSpeedScale     = 1.0f; // manual scale factor for orbital speed
-static constexpr float kSigmaR         = 0.05f;
+static constexpr float kSigmaR         = 0.1f;
 static constexpr float kSigmaPhiLeft   = 0.5f; // trailing edge (dphi < 0)
 static constexpr float kSigmaPhiRight  = 0.1f; // leading edge  (dphi >= 0)
-static constexpr float kSigmaREnvelope = 2.0f;
+static constexpr float kSigmaREnvelope = 3.0f;
 // Precomputed reciprocals — avoids divisions inside the Gaussian loop.
-static constexpr float kInvSigmaR2         = 1.0f / (kSigmaR         * kSigmaR        );
-static constexpr float kInvSigmaPhiLeft2   = 1.0f / (kSigmaPhiLeft   * kSigmaPhiLeft  );
-static constexpr float kInvSigmaPhiRight2  = 1.0f / (kSigmaPhiRight  * kSigmaPhiRight );
-static constexpr float kInvSigmaREnv2      = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
+static constexpr float kInvSigmaR2        = 1.0f / (kSigmaR         * kSigmaR        );
+static constexpr float kInvSigmaPhiLeft2  = 1.0f / (kSigmaPhiLeft   * kSigmaPhiLeft  );
+static constexpr float kInvSigmaPhiRight2 = 1.0f / (kSigmaPhiRight  * kSigmaPhiRight );
+static constexpr float kInvSigmaREnv2     = 1.0f / (kSigmaREnvelope * kSigmaREnvelope);
 
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
@@ -25,10 +28,33 @@ __constant__ float  g_gaussian_gammas[NUM_GAUSSIANS];
 // ---------------------------------------------------------------------------
 // float3 operators (not provided by cuda_runtime.h by default)
 // ---------------------------------------------------------------------------
-__device__ inline float3 operator+( float3 a, float3 b ) { return { a.x+b.x, a.y+b.y, a.z+b.z }; }
-__device__ inline float3 operator-( float3 a, float3 b ) { return { a.x-b.x, a.y-b.y, a.z-b.z }; }
-__device__ inline float3 operator*( float s, float3 a )  { return { s*a.x, s*a.y, s*a.z }; }
-__device__ inline float  dot3( float3 a, float3 b )      { return a.x*b.x + a.y*b.y + a.z*b.z; }
+__device__ inline float3  operator+( float3 a, float3 b )   { return { a.x+b.x, a.y+b.y, a.z+b.z }; }
+__device__ inline float3  operator-( float3 a, float3 b )   { return { a.x-b.x, a.y-b.y, a.z-b.z }; }
+__device__ inline float3  operator*( float s, float3 a )    { return { s*a.x, s*a.y, s*a.z }; }
+__device__ inline float3& operator+=( float3& a, float3 b ) { a.x+=b.x; a.y+=b.y; a.z+=b.z; return a; }
+__device__ inline float   dot3( float3 a, float3 b )        { return a.x*b.x + a.y*b.y + a.z*b.z; }
+
+// Wyman et al. (2013) analytic fit to CIE 1931 XYZ color matching functions.
+// Asymmetric Gaussians: t = (lambda - center) * (lambda < center ? lo_inv : hi_inv)
+// XYZ is then converted to linear sRGB (D65).
+__device__ inline float3 shift_to_rgb( float lambda ) {
+  auto asym = []( float l, float c, float lo, float hi ) {
+    float t = (l - c) * (l < c ? lo : hi);
+    return __expf( -0.5f * t * t );
+  };
+  float X = 0.362f * asym( lambda, 442.0f, 0.0624f, 0.0374f )
+          + 1.056f * asym( lambda, 599.8f, 0.0264f, 0.0323f )
+          - 0.065f * asym( lambda, 501.1f, 0.0490f, 0.0382f );
+  float Y = 0.821f * asym( lambda, 568.8f, 0.0213f, 0.0247f )
+          + 0.286f * asym( lambda, 530.9f, 0.0613f, 0.0322f );
+  float Z = 1.217f * asym( lambda, 437.0f, 0.0845f, 0.0278f )
+          + 0.681f * asym( lambda, 459.0f, 0.0385f, 0.0725f );
+  // XYZ -> linear sRGB (D65 white point)
+  float r =  3.2406f * X - 1.5372f * Y - 0.4986f * Z;
+  float g = -0.9689f * X + 1.8758f * Y + 0.0415f * Z;
+  float b =  0.0557f * X - 0.2040f * Y + 1.0570f * Z;
+  return { r, g, b };
+}
 __device__ inline float3 normalize3( float3 a ) {
   float n = rsqrtf( dot3( a, a ) );
   return n * a;
@@ -141,8 +167,7 @@ __device__ __host__ inline float orbital_speed( float r, float r_s ) {
 // ---------------------------------------------------------------------------
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void raytracer_kernel(
-  float* __restrict__ intensity_buffer,
-  float* __restrict__ shift_buffer,
+  float3* __restrict__ color_buffer,
   int          width,
   int          height,
   SceneParams  scene,
@@ -159,9 +184,7 @@ __global__ void raytracer_kernel(
   get_init_rphi( wi, hi, cam, r0, u0, phi0, L, projection, accretion );
 
   State y = { r0, u0, phi0 };
-  float strength   = 0.0f;
-  float intensity  = 0.0f;
-  float shift      = 0.0f;
+  float3 color = { 0.0f, 0.0f, 0.0f };
   const float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
 
   for ( int i = 0; i < rk4.N; i++ ) {
@@ -199,8 +222,7 @@ __global__ void raytracer_kernel(
       // Sum all Gaussian contributions at (r_hit, disk_phi).
       // Gravitational redshift depends only on emission radius, not on which Gaussian.
       float grav_redshift = sqrtf( 1.0f - scene.r_s / r_hit );
-      float intensity_cross  = 0.0f;
-      float shift_cross      = 0.0f;
+      float3 color_cross = { 0.0f, 0.0f, 0.0f };
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
         float dr   = r_hit - g_gaussian_centers[g].x;
@@ -210,18 +232,17 @@ __global__ void raytracer_kernel(
 
         // Relativistic intensity boost: kinematic Doppler × gravitational redshift
         float delta = grav_redshift / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
-        float contrib = __expf( exponent ) * delta * delta * delta;
+        float boost = kIntensityBoost ? delta * delta * delta : 1.0f;
+        float intensity = __expf( exponent ) * boost;
 
-        intensity_cross  += contrib;
         // Relativistic Doppler effect
-        shift_cross += contrib * delta;
+        float3 hue = kDopplerShift ? shift_to_rgb( kBaseWavelength / delta ) : shift_to_rgb( kBaseWavelength );
+        color_cross += intensity * hue;
       }
 
       float dr_mid = r_hit - r_mid;
       float radial_envelope = __expf( -0.5f * dr_mid * dr_mid * kInvSigmaREnv2 );
-      strength   += intensity_cross;
-      intensity  += intensity_cross  * radial_envelope;
-      shift += shift_cross;
+      color += radial_envelope * color_cross;
     }
     if ( yn.r <= scene.r_s ) {
       break;
@@ -229,10 +250,7 @@ __global__ void raytracer_kernel(
     y = yn;
   }
 
-  int idx = hi * width + wi;
-  intensity_buffer [ idx ] = intensity;
-  // 1.0 = no shift, <1 = blueshift, >1 = redshift
-  shift_buffer[ idx ] = strength > 0.0f ? shift / strength : 1.0f;
+  color_buffer[ hi * width + wi ] = color;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,8 +276,7 @@ void upload_gaussians( const float2* centers, float r_s ) {
 // Host-side launch wrapper
 // ---------------------------------------------------------------------------
 void launch_raytracer(
-  float*       d_intensity,
-  float*       d_shift,
+  float3*      d_color,
   int          width,
   int          height,
   SceneParams  scene,
@@ -272,7 +289,7 @@ void launch_raytracer(
     (width  + kBlockDimX - 1) / kBlockDimX,
     (height + kBlockDimY - 1) / kBlockDimY
   );
-  raytracer_kernel<<<grid, block>>>( d_intensity, d_shift, width, height, scene, cam, rk4, t_offset );
+  raytracer_kernel<<<grid, block>>>( d_color, width, height, scene, cam, rk4, t_offset );
 }
 
 // ---------------------------------------------------------------------------
@@ -280,14 +297,14 @@ void launch_raytracer(
 // ---------------------------------------------------------------------------
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void blur_kernel(
-  const float* __restrict__ input,
-  float*       __restrict__ output,
+  const float3* __restrict__ input,
+  float3*       __restrict__ output,
   int width, int height
 ) {
   constexpr int R      = kBlurRadius;
   constexpr int TILE_W = kBlockDimX + 2 * R;
   constexpr int TILE_H = kBlockDimY + 2 * R;
-  __shared__ float tile[ TILE_H ][ TILE_W ];
+  __shared__ float3 tile[ TILE_H ][ TILE_W ];
 
   const int base_x = blockIdx.x * kBlockDimX - R;
   const int base_y = blockIdx.y * kBlockDimY - R;
@@ -308,20 +325,20 @@ __global__ void blur_kernel(
   int hi = blockIdx.y * kBlockDimY + threadIdx.y;
   if ( wi >= width || hi >= height ) return;
 
-  float sum = 0.0f;
+  float3 sum = { 0.0f, 0.0f, 0.0f };
   for ( int dy = -R; dy <= R; dy++ )
     for ( int dx = -R; dx <= R; dx++ )
       sum += tile[ threadIdx.y + R + dy ][ threadIdx.x + R + dx ];
 
   constexpr float kInvCount = 1.0f / ( (2*R+1) * (2*R+1) );
-  output[ hi * width + wi ] = sum * kInvCount;
+  output[ hi * width + wi ] = kInvCount * sum;
 }
 
 void launch_blur(
-  const float* d_input,
-  float*       d_output,
-  int          width,
-  int          height
+  const float3* d_input,
+  float3*       d_output,
+  int           width,
+  int           height
 ) {
   dim3 block( kBlockDimX, kBlockDimY );
   dim3 grid(

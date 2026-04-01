@@ -1,12 +1,11 @@
 #pragma once
 #include <glad/gl.h>
 
-// Renders a float grayscale framebuffer to the window via a fullscreen quad.
+// Renders an RGB framebuffer to the window via a fullscreen quad.
 struct Renderer {
   GLuint vao;
   GLuint vbo;
-  GLuint texture_intensity;
-  GLuint texture_shift;
+  GLuint texture_color;
   GLuint shader_program;
   int    width;
   int    height;
@@ -14,8 +13,8 @@ struct Renderer {
   // Create GL objects. Must be called after a valid GL context is current.
   bool init( int width, int height );
 
-  // Upload intensity and wavelength buffers (width*height floats each, row-major).
-  void upload( const float* intensity, const float* shift );
+  // Upload RGB buffer (width*height*3 floats, row-major, interleaved RGB).
+  void upload( const float* rgb );
 
   // Draw the fullscreen quad.
   void draw();
