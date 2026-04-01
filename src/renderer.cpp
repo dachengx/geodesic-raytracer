@@ -16,9 +16,20 @@ static const char* kFragSrc = R"(
 in vec2 uv;
 out vec4 frag_color;
 uniform sampler2D tex;
+
+// Gaussian fit to CIE 1931 color matching functions.
+// lambda in nanometers, visible range ~380-780 nm.
+vec3 wavelength_to_rgb(float lambda) {
+    float r = exp(-pow((lambda - 602.0) / 75.0, 2.0));
+    float g = exp(-pow((lambda - 537.0) / 75.0, 2.0));
+    float b = exp(-pow((lambda - 447.0) / 40.0, 2.0));
+    return clamp(vec3(r, g, b), 0.0, 1.0);
+}
+
 void main() {
+    const float kWavelength = 600.0; // orange, nm
     float v = texture(tex, uv).r;
-    frag_color = vec4(v, v, v, 1.0);
+    frag_color = vec4(v * wavelength_to_rgb(kWavelength), 1.0);
 }
 )";
 
