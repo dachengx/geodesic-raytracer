@@ -140,7 +140,8 @@ __device__ __host__ inline float orbital_speed( float r, float r_s ) {
 // ---------------------------------------------------------------------------
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void raytracer_kernel(
-  float* __restrict__ framebuffer,
+  float* __restrict__ intensity_buffer,
+  float* __restrict__ wavelength_buffer,
   int          width,
   int          height,
   SceneParams  scene,
@@ -157,7 +158,9 @@ __global__ void raytracer_kernel(
   get_init_rphi( wi, hi, cam, r0, u0, phi0, L, projection, accretion );
 
   State y = { r0, u0, phi0 };
-  float value = 0.0f;  // default: escaped to infinity
+  float strength   = 0.0f;
+  float intensity  = 0.0f;
+  float wavelength = 0.0f;
   const float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
 
   for ( int i = 0; i < rk4.N; i++ ) {
@@ -193,7 +196,8 @@ __global__ void raytracer_kernel(
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
-      float intensity = 0.0f;
+      float intensity_cross  = 0.0f;
+      float wavelength_cross = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
         float dr   = r_hit - g_gaussian_centers[g].x;
@@ -202,14 +206,19 @@ __global__ void raytracer_kernel(
         float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
 
         // Relativistic intensity boost
-        float delta = 1.0f / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
+        float delta   = 1.0f / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
+        float contrib = __expf( exponent ) * delta * delta * delta;
 
-        intensity += 0.5f * __expf( exponent ) * delta * delta * delta;
+        intensity_cross  += contrib;
+        // Relativistic Doppler effect
+        wavelength_cross += contrib * ( kDefaultWavelength / delta );
       }
 
       float dr_mid = r_hit - r_mid;
       float radial_envelope = __expf( -0.5f * dr_mid * dr_mid * kInvSigmaREnv2 );
-      value += fminf( intensity * radial_envelope, 1.0f );
+      strength   += intensity_cross;
+      intensity  += intensity_cross  * radial_envelope;
+      wavelength += wavelength_cross;
     }
     if ( yn.r <= scene.r_s ) {
       break;
@@ -217,7 +226,9 @@ __global__ void raytracer_kernel(
     y = yn;
   }
 
-  framebuffer[ hi * width + wi ] = value;
+  int idx = hi * width + wi;
+  intensity_buffer [ idx ] = intensity;
+  wavelength_buffer[ idx ] = intensity > 0.0f ? wavelength / strength : kDefaultWavelength;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +254,8 @@ void upload_gaussians( const float2* centers, float r_s ) {
 // Host-side launch wrapper
 // ---------------------------------------------------------------------------
 void launch_raytracer(
-  float*       d_framebuffer,
+  float*       d_intensity,
+  float*       d_wavelength,
   int          width,
   int          height,
   SceneParams  scene,
@@ -256,7 +268,7 @@ void launch_raytracer(
     (width  + kBlockDimX - 1) / kBlockDimX,
     (height + kBlockDimY - 1) / kBlockDimY
   );
-  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, t_offset );
+  raytracer_kernel<<<grid, block>>>( d_intensity, d_wavelength, width, height, scene, cam, rk4, t_offset );
 }
 
 // ---------------------------------------------------------------------------

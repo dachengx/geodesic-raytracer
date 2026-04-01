@@ -5,7 +5,8 @@
 struct Renderer {
   GLuint vao;
   GLuint vbo;
-  GLuint texture;
+  GLuint texture_intensity;
+  GLuint texture_wavelength;
   GLuint shader_program;
   int    width;
   int    height;
@@ -13,8 +14,8 @@ struct Renderer {
   // Create GL objects. Must be called after a valid GL context is current.
   bool init( int width, int height );
 
-  // Upload width*height floats (row-major, origin bottom-left) to the texture.
-  void upload( const float* data );
+  // Upload intensity and wavelength buffers (width*height floats each, row-major).
+  void upload( const float* intensity, const float* wavelength );
 
   // Draw the fullscreen quad.
   void draw();
