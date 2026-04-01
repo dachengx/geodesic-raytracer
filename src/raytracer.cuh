@@ -3,8 +3,10 @@
 
 #define NUM_GAUSSIANS 100
 
+static constexpr float kPI = 3.14159265358979323846f;
+
 // Upload Gaussian centers (r, phi) to device constant memory before rendering.
-void upload_gaussians( const float2* centers );
+void upload_gaussians( const float2* centers, float r_s );
 
 struct SceneParams {
   float r_s;
@@ -38,7 +40,7 @@ void launch_raytracer(
   SceneParams  scene,
   CameraParams cam,
   RK4Params    rk4,
-  float        phi_offset
+  float        t_offset
 );
 
 // Box blur post-process: reads input, writes averaged result to output.
