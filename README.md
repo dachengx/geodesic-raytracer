@@ -54,10 +54,4 @@ cmake -B build
 cmake --build build --config Release
 ```
 
-The executable is written to `build\Release\raytracer.exe`.
-
-### Controls
-
-| Key | Action |
-|-----|--------|
-| `Esc` | Quit |
+The executable is written to `build\Release\raytracer.exe`. Press `Esc` to quit.

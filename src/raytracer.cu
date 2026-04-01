@@ -2,7 +2,6 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
-static constexpr float kPI             = 3.14159265358979323846f;
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
@@ -18,6 +17,7 @@ static constexpr float kInvSigmaREnv2      = 1.0f / (kSigmaREnvelope * kSigmaREn
 
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
+__constant__ float  g_gaussian_speeds[NUM_GAUSSIANS];
 
 // ---------------------------------------------------------------------------
 // float3 operators (not provided by cuda_runtime.h by default)
@@ -115,6 +115,14 @@ __device__ void get_init_rphi(
 }
 
 // ---------------------------------------------------------------------------
+// Keplerian orbital speed at radius r around a black hole with Schwarzschild
+// radius r_s. Returns v = sqrt(r_s / (2r)), the azimuthal speed in natural units.
+// ---------------------------------------------------------------------------
+__device__ __host__ inline float orbital_speed( float r, float r_s ) {
+  return sqrtf( 0.5f * r_s / r );
+}
+
+// ---------------------------------------------------------------------------
 // Main kernel: one thread per pixel.
 // Outputs a float per pixel: 0 = fell into BH, 1 = hit accretion, 0.5 = escaped.
 // ---------------------------------------------------------------------------
@@ -126,7 +134,7 @@ __global__ void raytracer_kernel(
   SceneParams  scene,
   CameraParams cam,
   RK4Params    rk4,
-  float        phi_offset
+  float        t_offset
 ) {
   int wi = blockIdx.x * blockDim.x + threadIdx.x;
   int hi = blockIdx.y * blockDim.y + threadIdx.y;
@@ -165,9 +173,9 @@ __global__ void raytracer_kernel(
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
-      const float sample_phi = disk_phi - phi_offset;
       float intensity = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
+        float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
         float dr   = r_hit - g_gaussian_centers[g].x;
         float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
         float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
@@ -191,8 +199,12 @@ __global__ void raytracer_kernel(
 // ---------------------------------------------------------------------------
 // Upload Gaussian centers to constant memory (call once before render loop).
 // ---------------------------------------------------------------------------
-void upload_gaussians( const float2* centers ) {
+void upload_gaussians( const float2* centers, float r_s ) {
+  float speeds[NUM_GAUSSIANS];
+  for ( int i = 0; i < NUM_GAUSSIANS; i++ )
+    speeds[i] = orbital_speed( centers[i].x, r_s ) / r_s;
   cudaMemcpyToSymbol( g_gaussian_centers, centers, NUM_GAUSSIANS * sizeof( float2 ) );
+  cudaMemcpyToSymbol( g_gaussian_speeds,  speeds,  NUM_GAUSSIANS * sizeof( float  ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -205,14 +217,14 @@ void launch_raytracer(
   SceneParams  scene,
   CameraParams cam,
   RK4Params    rk4,
-  float        phi_offset
+  float        t_offset
 ) {
   dim3 block( kBlockDimX, kBlockDimY );
   dim3 grid(
     (width  + kBlockDimX - 1) / kBlockDimX,
     (height + kBlockDimY - 1) / kBlockDimY
   );
-  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, phi_offset );
+  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, t_offset );
 }
 
 // ---------------------------------------------------------------------------

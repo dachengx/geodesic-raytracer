@@ -12,7 +12,7 @@
 // Scene / camera / integration parameters (mirrors the notebook)
 // ---------------------------------------------------------------------------
 static const SceneParams kScene = {
-  .r_s             = 1.0f,
+  .r_s             = 1.0f, // r_s is 2GM/c^2
   .accretion_r_min = 2.0f,
   .accretion_r_max = 6.0f,
 };
@@ -30,6 +30,9 @@ static const CameraParams kCamera = {
   .y_offset_obs  = 0.0f,
   .z_offset_obs  = 0.5f,
 };
+
+static constexpr float kTimeScale        = 0.5f; // Scales wall-clock seconds to simulation time
+static constexpr int   kGaussianRandSeed = 42;
 
 static const RK4Params kRK4 = {
   .dl = 0.01f,
@@ -85,15 +88,14 @@ int main( void ) {
   // Generate Gaussian centers randomly in (r, phi) and upload to GPU.
   // -------------------------------------------------------------------------
   {
-    static const float kPI = 3.14159265358979323846f;
-    srand( 42 );
+    srand( kGaussianRandSeed );
     float2 centers[NUM_GAUSSIANS];
     for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
       float t = (float)rand() / (float)RAND_MAX;
       centers[i].x = kScene.accretion_r_min + t * (kScene.accretion_r_max - kScene.accretion_r_min);
       centers[i].y = 2.0f * kPI * (float)rand() / (float)RAND_MAX;
     }
-    upload_gaussians( centers );
+    upload_gaussians( centers, kScene.r_s );
   }
 
   // -------------------------------------------------------------------------
@@ -120,7 +122,7 @@ int main( void ) {
   // -------------------------------------------------------------------------
   // Display loop
   // -------------------------------------------------------------------------
-  float  phi_offset = 0.0f;
+  float  t_offset = 0.0f;
   double prev_s = glfwGetTime();
   double title_countdown_s = 0.1;
   while ( !glfwWindowShouldClose( window ) ) {
@@ -140,8 +142,8 @@ int main( void ) {
     if ( glfwGetKey( window, GLFW_KEY_ESCAPE ) == GLFW_PRESS )
       glfwSetWindowShouldClose( window, 1 );
 
-    phi_offset += 0.2f * (float)elapsed_s;
-    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4, phi_offset );
+    t_offset += kTimeScale * (float)elapsed_s;
+    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4, t_offset );
     launch_blur( d_framebuffer, d_blurred, W, H );
     cudaDeviceSynchronize();
     cudaMemcpy( h_framebuffer, d_blurred, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
