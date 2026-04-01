@@ -229,7 +229,7 @@ __global__ void raytracer_kernel(
   int idx = hi * width + wi;
   intensity_buffer [ idx ] = intensity;
   // Wavelength ratio: 1.0 = no shift, <1 = blueshift, >1 = redshift
-  wavelength_buffer[ idx ] = strength > 0.0f ? ( wavelength / strength ) / kDefaultWavelength : 1.0f;
+  wavelength_buffer[ idx ] = strength > 0.0f ? wavelength / strength : 1.0f;
 }
 
 // ---------------------------------------------------------------------------
