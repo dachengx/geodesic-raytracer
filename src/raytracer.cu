@@ -5,9 +5,10 @@
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
+static constexpr float kSpeedScale     = 0.8f; // manual scale factor for orbital speed
 static constexpr float kSigmaR         = 0.05f;
-static constexpr float kSigmaPhiLeft   = 0.5f;   // trailing edge (dphi < 0)
-static constexpr float kSigmaPhiRight  = 0.1f;   // leading edge  (dphi >= 0)
+static constexpr float kSigmaPhiLeft   = 0.5f; // trailing edge (dphi < 0)
+static constexpr float kSigmaPhiRight  = 0.1f; // leading edge  (dphi >= 0)
 static constexpr float kSigmaREnvelope = 2.0f;
 // Precomputed reciprocals — avoids divisions inside the Gaussian loop.
 static constexpr float kInvSigmaR2         = 1.0f / (kSigmaR         * kSigmaR        );
@@ -18,6 +19,8 @@ static constexpr float kInvSigmaREnv2      = 1.0f / (kSigmaREnvelope * kSigmaREn
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
 __constant__ float  g_gaussian_speeds[NUM_GAUSSIANS];
+__constant__ float  g_gaussian_betas[NUM_GAUSSIANS];
+__constant__ float  g_gaussian_gammas[NUM_GAUSSIANS];
 
 // ---------------------------------------------------------------------------
 // float3 operators (not provided by cuda_runtime.h by default)
@@ -73,7 +76,7 @@ __device__ State rk4_step( State y, float dl, float r_s, float L ) {
 __device__ void get_init_rphi(
   int wi, int hi,
   const CameraParams& cam,
-  float& r0, float& u0, float& phi0, float& L,
+  float& r0, float& u0, float& phi0, float& L, float& projection,
   float3& accretion_out
 ) {
   // 3D position of pixel on the camera plane
@@ -89,12 +92,22 @@ __device__ void get_init_rphi(
   };
   float3 dxyzdl = normalize3( xyz - observer );
 
-  // Find the in-plane basis vector: trace the ray to z=0, normalize.
-  float e = -xyz.z / dxyzdl.z;
-  float3 accretion = normalize3( xyz + e * dxyzdl );
+  // Find the in-plane basis vector x: trace the ray to z=0, normalize.
+  float ex = -xyz.z / dxyzdl.z;
+  float3 accretion = normalize3( xyz + ex * dxyzdl );
   if ( accretion.y < 0.0f )
     accretion = (-1.0f) * accretion;
   accretion_out = accretion;
+
+  // Find the in-place basis vector y: perpendicular to basis vector x, normalize.
+  float ey = -( xyz.x * accretion.x + xyz.y * accretion.y ) / ( dxyzdl.x * accretion.x + dxyzdl.y * accretion.y );
+  float3 vertical = normalize3( xyz + ey * dxyzdl );
+  if ( vertical.z < 0.0f )
+    vertical = (-1.0f) * vertical;
+
+  // Find the orbital velocity direction of accretion
+  float3 orbital = { -accretion.y, accretion.x, 0.0f };
+  projection = dot3( vertical, orbital );
 
   // Project 3D position and direction into 2D (x, y) in this plane.
   float x0_2d  = dot3( xyz, accretion );
@@ -107,7 +120,7 @@ __device__ void get_init_rphi(
 
   // Convert Cartesian 2D -> polar.
   r0   = hypotf( x0_2d, y0_2d );
-  phi0 = atan2f( y0_2d, x0_2d );   // in (-pi, pi], may be negative on first step
+  phi0 = atan2f( y0_2d, x0_2d ); // in (-pi, pi], may be negative on first step
   float drdl0   = (x0_2d * dxdl0 + y0_2d * dydl0) / r0;
   float dphidl0 = (x0_2d * dydl0 - y0_2d * dxdl0) / (r0 * r0);
   u0 = drdl0;
@@ -128,7 +141,8 @@ __device__ __host__ inline float orbital_speed( float r, float r_s ) {
 // ---------------------------------------------------------------------------
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void raytracer_kernel(
-  float* __restrict__ framebuffer,
+  float* __restrict__ intensity_buffer,
+  float* __restrict__ shift_buffer,
   int          width,
   int          height,
   SceneParams  scene,
@@ -140,12 +154,14 @@ __global__ void raytracer_kernel(
   int hi = blockIdx.y * blockDim.y + threadIdx.y;
   if ( wi >= width || hi >= height ) return;
 
-  float r0, u0, phi0, L;
+  float r0, u0, phi0, L, projection;
   float3 accretion;
-  get_init_rphi( wi, hi, cam, r0, u0, phi0, L, accretion );
+  get_init_rphi( wi, hi, cam, r0, u0, phi0, L, projection, accretion );
 
   State y = { r0, u0, phi0 };
-  float value = 0.0f;  // default: escaped to infinity
+  float strength   = 0.0f;
+  float intensity  = 0.0f;
+  float shift      = 0.0f;
   const float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
 
   for ( int i = 0; i < rk4.N; i++ ) {
@@ -162,6 +178,13 @@ __global__ void raytracer_kernel(
       // Midpoint radius at crossing
       float r_hit = 0.5f * ( y.r + yn.r );
 
+      // y-component of the yn→y direction in the 2D disk plane (along orbital axis).
+      // Used as cos_theta: angle between photon travel direction and orbital velocity.
+      float2 pos_y  = { y.r  * cosf(y.phi),  y.r  * sinf(y.phi)  };
+      float2 pos_yn = { yn.r * cosf(yn.phi), yn.r * sinf(yn.phi) };
+      float2 d      = { pos_y.x - pos_yn.x,  pos_y.y - pos_yn.y };
+      float  cos_theta = d.y / sqrtf( d.x*d.x + d.y*d.y );
+
       // Global azimuthal angle of the intersection in the accretion disk plane.
       // cross_zero => intersection along +accretion; cross_pi => along -accretion.
       float disk_phi;
@@ -169,23 +192,34 @@ __global__ void raytracer_kernel(
         disk_phi = atan2f(  accretion.y,  accretion.x );
       } else {
         disk_phi = atan2f( -accretion.y, -accretion.x );
+        cos_theta *= -1.0f; // The orbital direction should be reversed.
       }
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
-      float intensity = 0.0f;
+      float intensity_cross  = 0.0f;
+      float shift_cross      = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
         float dr   = r_hit - g_gaussian_centers[g].x;
         float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
         float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
         float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
-        intensity += 0.5f * __expf( exponent );
+
+        // Relativistic intensity boost
+        float delta   = 1.0f / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
+        float contrib = __expf( exponent ) * delta * delta * delta;
+
+        intensity_cross  += contrib;
+        // Relativistic Doppler effect
+        shift_cross += contrib * delta;
       }
 
       float dr_mid = r_hit - r_mid;
       float radial_envelope = __expf( -0.5f * dr_mid * dr_mid * kInvSigmaREnv2 );
-      value += fminf( intensity * radial_envelope, 1.0f );
+      strength   += intensity_cross;
+      intensity  += intensity_cross  * radial_envelope;
+      shift += shift_cross;
     }
     if ( yn.r <= scene.r_s ) {
       break;
@@ -193,7 +227,10 @@ __global__ void raytracer_kernel(
     y = yn;
   }
 
-  framebuffer[ hi * width + wi ] = value;
+  int idx = hi * width + wi;
+  intensity_buffer [ idx ] = intensity;
+  // 1.0 = no shift, <1 = blueshift, >1 = redshift
+  shift_buffer[ idx ] = strength > 0.0f ? shift / strength : 1.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,17 +238,26 @@ __global__ void raytracer_kernel(
 // ---------------------------------------------------------------------------
 void upload_gaussians( const float2* centers, float r_s ) {
   float speeds[NUM_GAUSSIANS];
-  for ( int i = 0; i < NUM_GAUSSIANS; i++ )
-    speeds[i] = orbital_speed( centers[i].x, r_s ) / r_s;
+  float betas[NUM_GAUSSIANS];
+  float gammas[NUM_GAUSSIANS];
+  for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
+    float speed = orbital_speed( centers[i].x, r_s ) * kSpeedScale;
+    speeds[i]   = speed / r_s; // angular speed
+    betas[i]    = speed;
+    gammas[i]   = 1.0f / sqrtf( 1.0f - speed * speed );
+  }
   cudaMemcpyToSymbol( g_gaussian_centers, centers, NUM_GAUSSIANS * sizeof( float2 ) );
   cudaMemcpyToSymbol( g_gaussian_speeds,  speeds,  NUM_GAUSSIANS * sizeof( float  ) );
+  cudaMemcpyToSymbol( g_gaussian_betas,   betas,   NUM_GAUSSIANS * sizeof( float  ) );
+  cudaMemcpyToSymbol( g_gaussian_gammas,  gammas,  NUM_GAUSSIANS * sizeof( float  ) );
 }
 
 // ---------------------------------------------------------------------------
 // Host-side launch wrapper
 // ---------------------------------------------------------------------------
 void launch_raytracer(
-  float*       d_framebuffer,
+  float*       d_intensity,
+  float*       d_shift,
   int          width,
   int          height,
   SceneParams  scene,
@@ -224,7 +270,7 @@ void launch_raytracer(
     (width  + kBlockDimX - 1) / kBlockDimX,
     (height + kBlockDimY - 1) / kBlockDimY
   );
-  raytracer_kernel<<<grid, block>>>( d_framebuffer, width, height, scene, cam, rk4, t_offset );
+  raytracer_kernel<<<grid, block>>>( d_intensity, d_shift, width, height, scene, cam, rk4, t_offset );
 }
 
 // ---------------------------------------------------------------------------

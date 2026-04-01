@@ -15,11 +15,16 @@ static const char* kFragSrc = R"(
 #version 410 core
 in vec2 uv;
 out vec4 frag_color;
-uniform sampler2D tex;
+uniform sampler2D tex_intensity;
+uniform sampler2D tex_shift;
 
 // Gaussian fit to CIE 1931 color matching functions.
 // lambda in nanometers, visible range ~380-780 nm.
-vec3 wavelength_to_rgb(float lambda) {
+// Each channel models a cone type in the human eye: exp(-(lambda - center)^2 / width^2)
+//   R: L-cone (long),   center = 602 nm, width = 75 nm
+//   G: M-cone (medium), center = 537 nm, width = 75 nm
+//   B: S-cone (short),  center = 447 nm, width = 40 nm  (narrower — matches real physiology)
+vec3 shift_to_rgb(float lambda) {
     float r = exp(-pow((lambda - 602.0) / 75.0, 2.0));
     float g = exp(-pow((lambda - 537.0) / 75.0, 2.0));
     float b = exp(-pow((lambda - 447.0) / 40.0, 2.0));
@@ -27,9 +32,10 @@ vec3 wavelength_to_rgb(float lambda) {
 }
 
 void main() {
-    const float kWavelength = 600.0; // orange, nm
-    float v = texture(tex, uv).r;
-    frag_color = vec4(v * wavelength_to_rgb(kWavelength), 1.0);
+    const float kBaseWavelength = 600.0; // nm, unshifted emission wavelength
+    float v     = texture(tex_intensity, uv).r;
+    float ratio = texture(tex_shift,     uv).r;
+    frag_color  = vec4(v * shift_to_rgb(kBaseWavelength / ratio), 1.0);
 }
 )";
 
@@ -92,30 +98,40 @@ bool Renderer::init( int w, int h ) {
   glVertexAttribPointer( 0, 2, GL_FLOAT, GL_FALSE, 0, NULL );
   glBindVertexArray( 0 );
 
-  // Grayscale texture (single float channel)
-  glGenTextures( 1, &texture );
-  glBindTexture( GL_TEXTURE_2D, texture );
-  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-  glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-  glTexImage2D( GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, NULL );
-  glBindTexture( GL_TEXTURE_2D, 0 );
+  auto make_tex = [&]( GLuint& tex ) {
+    glGenTextures( 1, &tex );
+    glBindTexture( GL_TEXTURE_2D, tex );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    glTexImage2D( GL_TEXTURE_2D, 0, GL_R32F, width, height, 0, GL_RED, GL_FLOAT, NULL );
+    glBindTexture( GL_TEXTURE_2D, 0 );
+  };
+  make_tex( texture_intensity );
+  make_tex( texture_shift );
 
   return true;
 }
 
-void Renderer::upload( const float* data ) {
-  glBindTexture( GL_TEXTURE_2D, texture );
-  glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_FLOAT, data );
-  glBindTexture( GL_TEXTURE_2D, 0 );
+void Renderer::upload( const float* intensity, const float* shift ) {
+  auto upload_tex = []( GLuint tex, int w, int h, const float* data ) {
+    glBindTexture( GL_TEXTURE_2D, tex );
+    glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_FLOAT, data );
+    glBindTexture( GL_TEXTURE_2D, 0 );
+  };
+  upload_tex( texture_intensity, width, height, intensity );
+  upload_tex( texture_shift, width, height, shift );
 }
 
 void Renderer::draw() {
   glUseProgram( shader_program );
   glActiveTexture( GL_TEXTURE0 );
-  glBindTexture( GL_TEXTURE_2D, texture );
-  glUniform1i( glGetUniformLocation( shader_program, "tex" ), 0 );
+  glBindTexture( GL_TEXTURE_2D, texture_intensity );
+  glUniform1i( glGetUniformLocation( shader_program, "tex_intensity" ), 0 );
+  glActiveTexture( GL_TEXTURE1 );
+  glBindTexture( GL_TEXTURE_2D, texture_shift );
+  glUniform1i( glGetUniformLocation( shader_program, "tex_shift" ), 1 );
   glBindVertexArray( vao );
   glDrawArrays( GL_TRIANGLES, 0, 6 );
   glBindVertexArray( 0 );
@@ -123,7 +139,8 @@ void Renderer::draw() {
 
 void Renderer::destroy() {
   glDeleteProgram( shader_program );
-  glDeleteTextures( 1, &texture );
+  glDeleteTextures( 1, &texture_intensity );
+  glDeleteTextures( 1, &texture_shift );
   glDeleteBuffers( 1, &vbo );
   glDeleteVertexArrays( 1, &vao );
 }

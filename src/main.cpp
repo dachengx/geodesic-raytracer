@@ -108,7 +108,13 @@ int main( void ) {
   cudaMalloc( &d_blurred, W * H * sizeof( float ) );
 
   float* h_framebuffer = NULL;
-  cudaMallocHost( &h_framebuffer, W * H * sizeof( float ) );  // pinned for fast DtoH
+  cudaMallocHost( &h_framebuffer, W * H * sizeof( float ) ); // pinned for fast DtoH
+
+  float* d_shift = NULL;
+  cudaMalloc( &d_shift, W * H * sizeof( float ) );
+
+  float* h_shift = NULL;
+  cudaMallocHost( &h_shift, W * H * sizeof( float ) );
 
   // -------------------------------------------------------------------------
   // OpenGL renderer
@@ -143,11 +149,12 @@ int main( void ) {
       glfwSetWindowShouldClose( window, 1 );
 
     t_offset += kTimeScale * (float)elapsed_s;
-    launch_raytracer( d_framebuffer, W, H, kScene, kCamera, kRK4, t_offset );
+    launch_raytracer( d_framebuffer, d_shift, W, H, kScene, kCamera, kRK4, t_offset );
     launch_blur( d_framebuffer, d_blurred, W, H );
     cudaDeviceSynchronize();
     cudaMemcpy( h_framebuffer, d_blurred, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
-    renderer.upload( h_framebuffer );
+    cudaMemcpy( h_shift, d_shift, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
+    renderer.upload( h_framebuffer, h_shift );
 
     glClear( GL_COLOR_BUFFER_BIT );
     renderer.draw();
@@ -159,8 +166,10 @@ int main( void ) {
   // -------------------------------------------------------------------------
   renderer.destroy();
   cudaFreeHost( h_framebuffer );
+  cudaFreeHost( h_shift );
   cudaFree( d_framebuffer );
   cudaFree( d_blurred );
+  cudaFree( d_shift );
   glfwTerminate();
   return 0;
 }

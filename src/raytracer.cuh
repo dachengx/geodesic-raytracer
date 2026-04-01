@@ -34,7 +34,8 @@ struct RK4Params {
 };
 
 void launch_raytracer(
-  float*       d_framebuffer,
+  float*       d_intensity,
+  float*       d_shift,
   int          width,
   int          height,
   SceneParams  scene,
