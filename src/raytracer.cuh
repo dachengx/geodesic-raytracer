@@ -34,8 +34,7 @@ struct RK4Params {
 };
 
 void launch_raytracer(
-  float*       d_intensity,
-  float*       d_shift,
+  float3*      d_color,
   int          width,
   int          height,
   SceneParams  scene,
@@ -46,8 +45,8 @@ void launch_raytracer(
 
 // Box blur post-process: reads input, writes averaged result to output.
 void launch_blur(
-  const float* d_input,
-  float*       d_output,
-  int          width,
-  int          height
+  const float3* d_input,
+  float3*       d_output,
+  int           width,
+  int           height
 );

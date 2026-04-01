@@ -12,9 +12,9 @@
 // Scene / camera / integration parameters (mirrors the notebook)
 // ---------------------------------------------------------------------------
 static const SceneParams kScene = {
-  .r_s             = 1.0f, // r_s is 2GM/c^2
-  .accretion_r_min = 3.5f,
-  .accretion_r_max = 7.5f,
+  .r_s             = 0.5f, // r_s is 2GM/c^2
+  .accretion_r_min = 2.0f,
+  .accretion_r_max = 8.0f,
 };
 
 static const CameraParams kCamera = {
@@ -31,9 +31,10 @@ static const CameraParams kCamera = {
   .z_offset_obs  = 0.5f,
 };
 
-static constexpr float kTimeScale        = 0.5f; // Scales wall-clock seconds to simulation time
+static constexpr float kTimeScale        = 1.0f; // Scales wall-clock seconds to simulation time
 static constexpr float kAccretionMargin  = 0.1f;
 static constexpr int   kGaussianRandSeed = 42;
+static constexpr bool  kBlur             = false; // false = skip box blur
 
 static const RK4Params kRK4 = {
   .dl = 0.01f,
@@ -104,20 +105,14 @@ int main( void ) {
   // -------------------------------------------------------------------------
   // CUDA buffers
   // -------------------------------------------------------------------------
-  float* d_framebuffer = NULL;
-  cudaMalloc( &d_framebuffer, W * H * sizeof( float ) );
+  float3* d_color = NULL;
+  cudaMalloc( &d_color, W * H * sizeof( float3 ) );
 
-  float* d_blurred = NULL;
-  cudaMalloc( &d_blurred, W * H * sizeof( float ) );
+  float3* d_blurred = NULL;
+  cudaMalloc( &d_blurred, W * H * sizeof( float3 ) );
 
-  float* h_framebuffer = NULL;
-  cudaMallocHost( &h_framebuffer, W * H * sizeof( float ) ); // pinned for fast DtoH
-
-  float* d_shift = NULL;
-  cudaMalloc( &d_shift, W * H * sizeof( float ) );
-
-  float* h_shift = NULL;
-  cudaMallocHost( &h_shift, W * H * sizeof( float ) );
+  float* h_color = NULL;
+  cudaMallocHost( &h_color, W * H * sizeof( float3 ) );
 
   // -------------------------------------------------------------------------
   // OpenGL renderer
@@ -152,12 +147,11 @@ int main( void ) {
       glfwSetWindowShouldClose( window, 1 );
 
     t_offset += kTimeScale * (float)elapsed_s;
-    launch_raytracer( d_framebuffer, d_shift, W, H, kScene, kCamera, kRK4, t_offset );
-    launch_blur( d_framebuffer, d_blurred, W, H );
+    launch_raytracer( d_color, W, H, kScene, kCamera, kRK4, t_offset );
+    if ( kBlur ) launch_blur( d_color, d_blurred, W, H );
     cudaDeviceSynchronize();
-    cudaMemcpy( h_framebuffer, d_blurred, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
-    cudaMemcpy( h_shift, d_shift, W * H * sizeof( float ), cudaMemcpyDeviceToHost );
-    renderer.upload( h_framebuffer, h_shift );
+    cudaMemcpy( h_color, kBlur ? d_blurred : d_color, W * H * sizeof( float3 ), cudaMemcpyDeviceToHost );
+    renderer.upload( h_color );
 
     glClear( GL_COLOR_BUFFER_BIT );
     renderer.draw();
@@ -168,11 +162,9 @@ int main( void ) {
   // Cleanup
   // -------------------------------------------------------------------------
   renderer.destroy();
-  cudaFreeHost( h_framebuffer );
-  cudaFreeHost( h_shift );
-  cudaFree( d_framebuffer );
+  cudaFreeHost( h_color );
+  cudaFree( d_color );
   cudaFree( d_blurred );
-  cudaFree( d_shift );
   glfwTerminate();
   return 0;
 }
