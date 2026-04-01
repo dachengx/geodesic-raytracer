@@ -18,6 +18,8 @@ static constexpr float kInvSigmaREnv2      = 1.0f / (kSigmaREnvelope * kSigmaREn
 // Gaussian centers in (r, phi) space, uploaded once before rendering.
 __constant__ float2 g_gaussian_centers[NUM_GAUSSIANS];
 __constant__ float  g_gaussian_speeds[NUM_GAUSSIANS];
+__constant__ float  g_gaussian_betas[NUM_GAUSSIANS];
+__constant__ float  g_gaussian_gammas[NUM_GAUSSIANS];
 
 // ---------------------------------------------------------------------------
 // float3 operators (not provided by cuda_runtime.h by default)
@@ -73,7 +75,7 @@ __device__ State rk4_step( State y, float dl, float r_s, float L ) {
 __device__ void get_init_rphi(
   int wi, int hi,
   const CameraParams& cam,
-  float& r0, float& u0, float& phi0, float& L,
+  float& r0, float& u0, float& phi0, float& L, float& projection,
   float3& accretion_out
 ) {
   // 3D position of pixel on the camera plane
@@ -89,12 +91,22 @@ __device__ void get_init_rphi(
   };
   float3 dxyzdl = normalize3( xyz - observer );
 
-  // Find the in-plane basis vector: trace the ray to z=0, normalize.
-  float e = -xyz.z / dxyzdl.z;
-  float3 accretion = normalize3( xyz + e * dxyzdl );
+  // Find the in-plane basis vector x: trace the ray to z=0, normalize.
+  float ex = -xyz.z / dxyzdl.z;
+  float3 accretion = normalize3( xyz + ex * dxyzdl );
   if ( accretion.y < 0.0f )
     accretion = (-1.0f) * accretion;
   accretion_out = accretion;
+
+  // Find the in-place basis vector y: perpendicular to basis vector x, normalize.
+  float ey = -( xyz.x * accretion.x + xyz.y * accretion.y ) / ( dxyzdl.x * accretion.x + dxyzdl.y * accretion.y );
+  float3 vertical = normalize3( xyz + ey * dxyzdl );
+  if ( vertical.z < 0.0f )
+    vertical = (-1.0f) * vertical;
+
+  // Find the orbital velocity direction of accretion
+  float3 orbital = { -accretion.y, accretion.x, 0.0f };
+  projection = dot3( vertical, orbital );
 
   // Project 3D position and direction into 2D (x, y) in this plane.
   float x0_2d  = dot3( xyz, accretion );
@@ -140,9 +152,9 @@ __global__ void raytracer_kernel(
   int hi = blockIdx.y * blockDim.y + threadIdx.y;
   if ( wi >= width || hi >= height ) return;
 
-  float r0, u0, phi0, L;
+  float r0, u0, phi0, L, projection;
   float3 accretion;
-  get_init_rphi( wi, hi, cam, r0, u0, phi0, L, accretion );
+  get_init_rphi( wi, hi, cam, r0, u0, phi0, L, projection, accretion );
 
   State y = { r0, u0, phi0 };
   float value = 0.0f;  // default: escaped to infinity
@@ -162,6 +174,13 @@ __global__ void raytracer_kernel(
       // Midpoint radius at crossing
       float r_hit = 0.5f * ( y.r + yn.r );
 
+      // y-component of the yn→y direction in the 2D disk plane (along orbital axis).
+      // Used as cos_theta: angle between photon travel direction and orbital velocity.
+      float2 pos_y  = { y.r  * cosf(y.phi),  y.r  * sinf(y.phi)  };
+      float2 pos_yn = { yn.r * cosf(yn.phi), yn.r * sinf(yn.phi) };
+      float2 d      = { pos_y.x - pos_yn.x,  pos_y.y - pos_yn.y };
+      float  cos_theta = d.y / sqrtf( d.x*d.x + d.y*d.y );
+
       // Global azimuthal angle of the intersection in the accretion disk plane.
       // cross_zero => intersection along +accretion; cross_pi => along -accretion.
       float disk_phi;
@@ -169,6 +188,7 @@ __global__ void raytracer_kernel(
         disk_phi = atan2f(  accretion.y,  accretion.x );
       } else {
         disk_phi = atan2f( -accretion.y, -accretion.x );
+        cos_theta *= -1.0f; // The orbital direction should be reversed.
       }
       if ( disk_phi < 0.0f ) disk_phi += 2.0f * kPI;
 
@@ -180,7 +200,11 @@ __global__ void raytracer_kernel(
         float dphi = remainderf( sample_phi - g_gaussian_centers[g].y, 2.0f * kPI );
         float inv_sphi2 = dphi < 0.0f ? kInvSigmaPhiLeft2 : kInvSigmaPhiRight2;
         float exponent = -0.5f * ( dr * dr * kInvSigmaR2 + dphi * dphi * inv_sphi2 );
-        intensity += 0.5f * __expf( exponent );
+
+        // Relativistic intensity boost
+        float delta = 1.0f / ( g_gaussian_gammas[g] * ( 1 - g_gaussian_betas[g] * projection * cos_theta ));
+
+        intensity += 0.5f * __expf( exponent ) * delta * delta * delta;
       }
 
       float dr_mid = r_hit - r_mid;
@@ -201,10 +225,18 @@ __global__ void raytracer_kernel(
 // ---------------------------------------------------------------------------
 void upload_gaussians( const float2* centers, float r_s ) {
   float speeds[NUM_GAUSSIANS];
-  for ( int i = 0; i < NUM_GAUSSIANS; i++ )
-    speeds[i] = orbital_speed( centers[i].x, r_s ) / r_s;
+  float betas[NUM_GAUSSIANS];
+  float gammas[NUM_GAUSSIANS];
+  for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
+    float speed  = orbital_speed( centers[i].x, r_s );
+    speeds[i]  = speed / r_s; // angular speed
+    betas[i]   = speed;
+    gammas[i]  = 1.0f / sqrtf( 1.0f - speed * speed );
+  }
   cudaMemcpyToSymbol( g_gaussian_centers, centers, NUM_GAUSSIANS * sizeof( float2 ) );
   cudaMemcpyToSymbol( g_gaussian_speeds,  speeds,  NUM_GAUSSIANS * sizeof( float  ) );
+  cudaMemcpyToSymbol( g_gaussian_betas,   betas,   NUM_GAUSSIANS * sizeof( float  ) );
+  cudaMemcpyToSymbol( g_gaussian_gammas,  gammas,  NUM_GAUSSIANS * sizeof( float  ) );
 }
 
 // ---------------------------------------------------------------------------
