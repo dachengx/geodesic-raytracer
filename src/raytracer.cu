@@ -5,9 +5,10 @@
 static constexpr int   kBlockDimX      = 32;
 static constexpr int   kBlockDimY      = 32;
 static constexpr int   kBlurRadius     = 1;
+static constexpr float kSpeedScale     = 0.8f; // manual scale factor for orbital speed
 static constexpr float kSigmaR         = 0.05f;
-static constexpr float kSigmaPhiLeft   = 0.5f;   // trailing edge (dphi < 0)
-static constexpr float kSigmaPhiRight  = 0.1f;   // leading edge  (dphi >= 0)
+static constexpr float kSigmaPhiLeft   = 0.5f; // trailing edge (dphi < 0)
+static constexpr float kSigmaPhiRight  = 0.1f; // leading edge  (dphi >= 0)
 static constexpr float kSigmaREnvelope = 2.0f;
 // Precomputed reciprocals — avoids divisions inside the Gaussian loop.
 static constexpr float kInvSigmaR2         = 1.0f / (kSigmaR         * kSigmaR        );
@@ -119,7 +120,7 @@ __device__ void get_init_rphi(
 
   // Convert Cartesian 2D -> polar.
   r0   = hypotf( x0_2d, y0_2d );
-  phi0 = atan2f( y0_2d, x0_2d );   // in (-pi, pi], may be negative on first step
+  phi0 = atan2f( y0_2d, x0_2d ); // in (-pi, pi], may be negative on first step
   float drdl0   = (x0_2d * dxdl0 + y0_2d * dydl0) / r0;
   float dphidl0 = (x0_2d * dydl0 - y0_2d * dxdl0) / (r0 * r0);
   u0 = drdl0;
@@ -141,7 +142,7 @@ __device__ __host__ inline float orbital_speed( float r, float r_s ) {
 __launch_bounds__( kBlockDimX * kBlockDimY )
 __global__ void raytracer_kernel(
   float* __restrict__ intensity_buffer,
-  float* __restrict__ wavelength_buffer,
+  float* __restrict__ shift_buffer,
   int          width,
   int          height,
   SceneParams  scene,
@@ -160,7 +161,7 @@ __global__ void raytracer_kernel(
   State y = { r0, u0, phi0 };
   float strength   = 0.0f;
   float intensity  = 0.0f;
-  float wavelength = 0.0f;
+  float shift      = 0.0f;
   const float r_mid = 0.5f * ( scene.accretion_r_min + scene.accretion_r_max );
 
   for ( int i = 0; i < rk4.N; i++ ) {
@@ -197,7 +198,7 @@ __global__ void raytracer_kernel(
 
       // Sum all Gaussian contributions at (r_hit, disk_phi).
       float intensity_cross  = 0.0f;
-      float wavelength_cross = 0.0f;
+      float shift_cross      = 0.0f;
       for ( int g = 0; g < NUM_GAUSSIANS; g++ ) {
         float sample_phi = disk_phi - t_offset * g_gaussian_speeds[g];
         float dr   = r_hit - g_gaussian_centers[g].x;
@@ -211,14 +212,14 @@ __global__ void raytracer_kernel(
 
         intensity_cross  += contrib;
         // Relativistic Doppler effect
-        wavelength_cross += contrib * ( kDefaultWavelength / delta );
+        shift_cross += contrib * delta;
       }
 
       float dr_mid = r_hit - r_mid;
       float radial_envelope = __expf( -0.5f * dr_mid * dr_mid * kInvSigmaREnv2 );
       strength   += intensity_cross;
       intensity  += intensity_cross  * radial_envelope;
-      wavelength += wavelength_cross;
+      shift += shift_cross;
     }
     if ( yn.r <= scene.r_s ) {
       break;
@@ -228,8 +229,8 @@ __global__ void raytracer_kernel(
 
   int idx = hi * width + wi;
   intensity_buffer [ idx ] = intensity;
-  // Wavelength ratio: 1.0 = no shift, <1 = blueshift, >1 = redshift
-  wavelength_buffer[ idx ] = strength > 0.0f ? wavelength / strength : 1.0f;
+  // 1.0 = no shift, <1 = blueshift, >1 = redshift
+  shift_buffer[ idx ] = strength > 0.0f ? shift / strength : 1.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +241,10 @@ void upload_gaussians( const float2* centers, float r_s ) {
   float betas[NUM_GAUSSIANS];
   float gammas[NUM_GAUSSIANS];
   for ( int i = 0; i < NUM_GAUSSIANS; i++ ) {
-    float speed  = orbital_speed( centers[i].x, r_s );
-    speeds[i]  = speed / r_s; // angular speed
-    betas[i]   = speed;
-    gammas[i]  = 1.0f / sqrtf( 1.0f - speed * speed );
+    float speed = orbital_speed( centers[i].x, r_s ) * kSpeedScale;
+    speeds[i]   = speed / r_s; // angular speed
+    betas[i]    = speed;
+    gammas[i]   = 1.0f / sqrtf( 1.0f - speed * speed );
   }
   cudaMemcpyToSymbol( g_gaussian_centers, centers, NUM_GAUSSIANS * sizeof( float2 ) );
   cudaMemcpyToSymbol( g_gaussian_speeds,  speeds,  NUM_GAUSSIANS * sizeof( float  ) );
@@ -256,7 +257,7 @@ void upload_gaussians( const float2* centers, float r_s ) {
 // ---------------------------------------------------------------------------
 void launch_raytracer(
   float*       d_intensity,
-  float*       d_wavelength,
+  float*       d_shift,
   int          width,
   int          height,
   SceneParams  scene,
@@ -269,7 +270,7 @@ void launch_raytracer(
     (width  + kBlockDimX - 1) / kBlockDimX,
     (height + kBlockDimY - 1) / kBlockDimY
   );
-  raytracer_kernel<<<grid, block>>>( d_intensity, d_wavelength, width, height, scene, cam, rk4, t_offset );
+  raytracer_kernel<<<grid, block>>>( d_intensity, d_shift, width, height, scene, cam, rk4, t_offset );
 }
 
 // ---------------------------------------------------------------------------

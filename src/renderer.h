@@ -6,7 +6,7 @@ struct Renderer {
   GLuint vao;
   GLuint vbo;
   GLuint texture_intensity;
-  GLuint texture_wavelength;
+  GLuint texture_shift;
   GLuint shader_program;
   int    width;
   int    height;
@@ -15,7 +15,7 @@ struct Renderer {
   bool init( int width, int height );
 
   // Upload intensity and wavelength buffers (width*height floats each, row-major).
-  void upload( const float* intensity, const float* wavelength );
+  void upload( const float* intensity, const float* shift );
 
   // Draw the fullscreen quad.
   void draw();

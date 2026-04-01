@@ -3,8 +3,7 @@
 
 #define NUM_GAUSSIANS 100
 
-static constexpr float kPI               = 3.14159265358979323846f;
-static constexpr float kDefaultWavelength = 600.0f; // orange, nm
+static constexpr float kPI = 3.14159265358979323846f;
 
 // Upload Gaussian centers (r, phi) to device constant memory before rendering.
 void upload_gaussians( const float2* centers, float r_s );
@@ -36,7 +35,7 @@ struct RK4Params {
 
 void launch_raytracer(
   float*       d_intensity,
-  float*       d_wavelength,
+  float*       d_shift,
   int          width,
   int          height,
   SceneParams  scene,
