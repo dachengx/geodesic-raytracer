@@ -35,7 +35,7 @@ Gaussian centers are generated once at startup with a fixed seed and uploaded to
 
 Install in this order:
 
-1. [Visual Studio Build Tools](https://visualstudio.microsoft.com/insiders/)
+1. [Visual Studio Build Tools](https://visualstudio.microsoft.com/insiders/), make sure "Desktop development with C++" is installed
 2. [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads?target_os=Windows&target_arch=x86_64&target_version=11&target_type=exe_local)
 
 After installation, add the CMake bundled with Visual Studio to `PATH`:
